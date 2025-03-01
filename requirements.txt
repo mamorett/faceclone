@@ -1,0 +1,16 @@
+diffusers
+torch==2.2.0       # Upgraded for float8_e4m3fn support
+torchvision==0.17.0  # Matched to torch 2.2.0
+transformers==4.38.0  # Recent stable version
+accelerate==0.27.0    # Compatible with newer diffusers and torch
+safetensors==0.4.2    # Latest as of early 2025
+einops==0.7.0         # Recent stable version
+onnxruntime-gpu==1.17.0  # Updated for GPU support
+spaces==0.19.4        # Kept as is (no major updates needed)
+omegaconf==2.3.0      # Recent stable version
+peft==0.9.0           # Updated for compatibility
+huggingface-hub==0.21.0  # Upgraded to support newer features
+opencv-python==4.9.0.80  # Latest stable version
+insightface==0.7.3       # Latest as of last update
+controlnet_aux==0.0.7    # Compatible with diffusers 0.25.1
+gdown==5.1.0             # Recent stable version
