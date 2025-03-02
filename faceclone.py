@@ -16,9 +16,11 @@ from pipeline_stable_diffusion_xl_instantid import StableDiffusionXLInstantIDPip
 from diffusers.schedulers import DDPMScheduler, HeunDiscreteScheduler, KarrasVeScheduler
 from diffusers.schedulers.scheduling_dpmsolver_multistep import DPMSolverMultistepScheduler
 
+
 class FaceDetector:
-    def __init__(self, yolo_model_path):
+    def __init__(self, yolo_model_path, target_enlargement=100):
         self.model = YOLO(yolo_model_path)
+        self.target_enlargement = target_enlargement
     
     def predict(self, image_path):
         # Run inference on the source
@@ -54,7 +56,7 @@ class FaceDetector:
             max_dim = max(width, height)
             
             # Calculate the enlargement needed (we'll use 200px as a base and adjust)
-            target_enlargement = 100  # Base enlargement value
+            target_enlargement = self.target_enlargement
             total_size = max_dim + 2 * target_enlargement  # Total size of the square crop
             
             # Calculate center of the bounding box
@@ -121,25 +123,39 @@ def resize_img(input_image, max_side=1024, min_side=1024, size=None,
         input_image = Image.fromarray(res)
     return input_image
 
-def get_output_filename(output_dir, input_path):
-    """Generate output filename with progressive numbering if file exists"""
+def get_output_filename(output_dir, input_path, index=None):
+    """Generate output filename with progressive numbering to prevent overwriting"""
     input_name = Path(input_path).stem
     output_base = os.path.join(output_dir, input_name)
-    output_file = f"{output_base}.png"  # Changed to .png
     
-    if os.path.exists(output_file):
-        counter = 1
-        while True:
-            output_file = f"{output_base}_{counter:03d}.png"  # Changed to .png
-            if not os.path.exists(output_file):
-                break
-            counter += 1
+    if index is not None:
+        # For multiple images in one run
+        base_name = f"{output_base}_{index:03d}"
+    else:
+        # For single image case
+        base_name = output_base
     
-    return output_file
+    # Check if the base filename already exists and find the next available number
+    output_file = f"{base_name}.png"
+    if not os.path.exists(output_file):
+        return output_file
+    
+    # If file exists, find the next available number
+    counter = 1
+    while True:
+        if index is not None:
+            # For multiple images, include both index and counter
+            output_file = f"{output_base}_{index:03d}_{counter:03d}.png"
+        else:
+            # For single image, just use counter
+            output_file = f"{output_base}_{counter:03d}.png"
+        if not os.path.exists(output_file):
+            return output_file
+        counter += 1
 
-def process_image(input_path, output_dir, pipe, app, prompt, face_image=None, generator=None):
-    """Process a single image and save the result"""
-    # Load and process the image
+
+def process_image(input_path, output_dir, pipe, app, prompt, face_image=None, generator=None, num_images=1):
+    """Process a single image and save multiple results"""
     if face_image is None:
         face_image = load_image(input_path)
     
@@ -154,12 +170,10 @@ def process_image(input_path, output_dir, pipe, app, prompt, face_image=None, ge
     face_emb = face_info['embedding']
     face_kps = draw_kps(face_image, face_info['kps'])
 
-    # Inference settings
-    n_prompt = "(lowres, low quality, worst quality:1.2), (text:1.2), watermark, painting, drawing, illustration, glitch, deformed, mutated, cross-eyed, ugly, disfigured)"
+    n_prompt = "(hands:1.2), (arms:1.2), (veil:1.2), cap, headset, (lowres, low quality, worst quality:1.2), (text:1.2), watermark, painting, drawing, illustration, glitch, deformed, mutated, cross-eyed, ugly, disfigured)"
 
-    # Generate image with generator
-    image = pipe(
-        prompt=prompt,  # Using the passed prompt parameter
+    images = pipe(
+        prompt=prompt,
         negative_prompt=n_prompt,
         image_embeds=face_emb,
         image=face_kps,
@@ -168,21 +182,29 @@ def process_image(input_path, output_dir, pipe, app, prompt, face_image=None, ge
         num_inference_steps=30,
         guidance_scale=2,
         generator=generator,
-    ).images[0]
+        num_images_per_prompt=num_images,
+    ).images
 
-    # Save the result as PNG
-    output_file = get_output_filename(output_dir, input_path)
-    image.save(output_file, format="PNG")  # Explicitly specify PNG format
-    print(f"Saved result to: {output_file}")
+    for i, image in enumerate(images):
+        output_file = get_output_filename(output_dir, input_path, i if num_images > 1 else None)
+        image.save(output_file, format="PNG")
+        print(f"Saved result to: {output_file}")
+
 
 def main():
     # Argument parser with new prompt parameter
     parser = argparse.ArgumentParser(description="Process image(s) with InstantID pipeline")
     parser.add_argument("input", help="Path to input image or directory")
     parser.add_argument("--output", "-o", default=".", help="Output directory (default: current directory)")
-    parser.add_argument("--prompt", "-p", default="girl, blonde hairs, blue eyes, cinematic, highly detailed, 4k, high resolution, color photo",
+    parser.add_argument("--prompt", "-p", 
+                       default="girl, blonde hairs, blue eyes, cinematic, highly detailed, 4k, high resolution, color photo",
                        help="Prompt for image generation")
+    parser.add_argument("--num-images", "-n", type=int, default=1,
+                       help="Number of images to generate for each input (default: 1)")
+    parser.add_argument("--enlargement", "-e", type=int, default=100,
+                       help="Face crop enlargement value in pixels (default: 100)")
     args = parser.parse_args()
+
 
     # Ensure output directory exists
     output_dir = os.path.abspath(args.output)
@@ -230,12 +252,13 @@ def main():
     pipe.cuda()
     pipe.load_ip_adapter_instantid(face_adapter)
     pipe.vae.enable_tiling()
+    pipe.enable_model_cpu_offload()
 
     # Create a random generator
     generator = torch.Generator(device="cuda").manual_seed(torch.randint(0, 2**32, (1,)).item())
 
-    # Initialize YOLO face detector
-    face_detector = FaceDetector('yolov11n-face.pt')
+    # Initialize YOLO face detector with custom enlargement
+    face_detector = FaceDetector('yolov11n-face.pt', target_enlargement=args.enlargement)
 
     # Process input
     input_path = os.path.abspath(args.input)
@@ -250,18 +273,16 @@ def main():
             if face_image is None:
                 print(f"No faces detected in the image: {image_file}")
                 continue            
-            # Update generator seed for each image
-            generator.manual_seed(torch.randint(0, 2**32, (1,)).item())
-            process_image(full_path, output_dir, pipe, app, args.prompt, face_image, generator)
+            process_image(full_path, output_dir, pipe, app, args.prompt, 
+                        face_image, generator, num_images=args.num_images)
     else:
         # Process single image
         face_image = face_detector.predict(input_path)
         if face_image is None:
             print(f"No faces detected in the image: {input_path}")
             return
-        # Update generator seed for single image
-        generator.manual_seed(torch.randint(0, 2**32, (1,)).item())
-        process_image(input_path, output_dir, pipe, app, args.prompt, face_image, generator)
+        process_image(input_path, output_dir, pipe, app, args.prompt, 
+                     face_image, generator, num_images=args.num_images)
 
 if __name__ == "__main__":
     main()
