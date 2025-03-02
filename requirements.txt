@@ -5,7 +5,7 @@ transformers==4.38.0  # Recent stable version
 accelerate==0.27.0    # Compatible with newer diffusers and torch
 safetensors==0.4.2    # Latest as of early 2025
 einops==0.7.0         # Recent stable version
-onnxruntime-gpu==1.17.0  # Updated for GPU support
+onnxruntime-gpu==1.18.0
 spaces==0.19.4        # Kept as is (no major updates needed)
 omegaconf==2.3.0      # Recent stable version
 peft==0.9.0           # Updated for compatibility
@@ -14,3 +14,4 @@ opencv-python==4.9.0.80  # Latest stable version
 insightface==0.7.3       # Latest as of last update
 controlnet_aux==0.0.7    # Compatible with diffusers 0.25.1
 gdown==5.1.0             # Recent stable version
+ultralytics

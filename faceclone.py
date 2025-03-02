@@ -13,6 +13,8 @@ from diffusers import StableDiffusionXLPipeline
 
 from insightface.app import FaceAnalysis
 from pipeline_stable_diffusion_xl_instantid import StableDiffusionXLInstantIDPipeline, draw_kps
+from diffusers.schedulers import DDPMScheduler, HeunDiscreteScheduler, KarrasVeScheduler
+from diffusers.schedulers.scheduling_dpmsolver_multistep import DPMSolverMultistepScheduler
 
 class FaceDetector:
     def __init__(self, yolo_model_path):
@@ -52,7 +54,7 @@ class FaceDetector:
             max_dim = max(width, height)
             
             # Calculate the enlargement needed (we'll use 200px as a base and adjust)
-            target_enlargement = 200  # Base enlargement value
+            target_enlargement = 100  # Base enlargement value
             total_size = max_dim + 2 * target_enlargement  # Total size of the square crop
             
             # Calculate center of the bounding box
@@ -123,19 +125,19 @@ def get_output_filename(output_dir, input_path):
     """Generate output filename with progressive numbering if file exists"""
     input_name = Path(input_path).stem
     output_base = os.path.join(output_dir, input_name)
-    output_file = f"{output_base}.jpg"
+    output_file = f"{output_base}.png"  # Changed to .png
     
     if os.path.exists(output_file):
         counter = 1
         while True:
-            output_file = f"{output_base}_{counter:03d}.jpg"
+            output_file = f"{output_base}_{counter:03d}.png"  # Changed to .png
             if not os.path.exists(output_file):
                 break
             counter += 1
     
     return output_file
 
-def process_image(input_path, output_dir, pipe, app, face_image=None):
+def process_image(input_path, output_dir, pipe, app, prompt, face_image=None, generator=None):
     """Process a single image and save the result"""
     # Load and process the image
     if face_image is None:
@@ -153,33 +155,33 @@ def process_image(input_path, output_dir, pipe, app, face_image=None):
     face_kps = draw_kps(face_image, face_info['kps'])
 
     # Inference settings
-    prompt = "photo of a woman. highly detailed, masterpiece, best quality"
-    # prompt = "analog film photo of a woman. faded film, desaturated, 35mm photo, grainy, vignette, vintage, Kodachrome, Lomography, stained, highly detailed, found footage, masterpiece, best quality"
+    n_prompt = "(lowres, low quality, worst quality:1.2), (text:1.2), watermark, painting, drawing, illustration, glitch, deformed, mutated, cross-eyed, ugly, disfigured)"
 
-    n_prompt = "(lowres, low quality, worst quality:1.2), (text:1.2), watermark, painting, drawing, illustration, glitch, deformed, mutated, cross-eyed, ugly, disfigured (lowres, low quality, worst quality:1.2), (text:1.2), watermark, painting, drawing, illustration, glitch,deformed, mutated, cross-eyed, ugly, disfigured"
-
-    # Generate image
+    # Generate image with generator
     image = pipe(
-        prompt=prompt,
+        prompt=prompt,  # Using the passed prompt parameter
         negative_prompt=n_prompt,
         image_embeds=face_emb,
         image=face_kps,
         controlnet_conditioning_scale=0.8,
         ip_adapter_scale=0.8,
         num_inference_steps=30,
-        guidance_scale=5,
+        guidance_scale=2,
+        generator=generator,
     ).images[0]
 
-    # Save the result
+    # Save the result as PNG
     output_file = get_output_filename(output_dir, input_path)
-    image.save(output_file)
+    image.save(output_file, format="PNG")  # Explicitly specify PNG format
     print(f"Saved result to: {output_file}")
 
 def main():
-    # Argument parser
+    # Argument parser with new prompt parameter
     parser = argparse.ArgumentParser(description="Process image(s) with InstantID pipeline")
     parser.add_argument("input", help="Path to input image or directory")
     parser.add_argument("--output", "-o", default=".", help="Output directory (default: current directory)")
+    parser.add_argument("--prompt", "-p", default="girl, blonde hairs, blue eyes, cinematic, highly detailed, 4k, high resolution, color photo",
+                       help="Prompt for image generation")
     args = parser.parse_args()
 
     # Ensure output directory exists
@@ -187,7 +189,8 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     # Load face encoder
-    app = FaceAnalysis(name='antelopev2', root='./', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+    # app = FaceAnalysis(name='antelopev2', root='./', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+    app = FaceAnalysis(name='antelopev2', root='./', providers=['CPUExecutionProvider'])
     app.prepare(ctx_id=0, det_size=(640, 640))
 
     # Model paths
@@ -214,9 +217,22 @@ def main():
         tokenizer=base_pipe.tokenizer,
         tokenizer_2=base_pipe.tokenizer_2,
     )
+
+    # Set up Karras scheduler with DPM++ SDE sampler
+    scheduler = DPMSolverMultistepScheduler.from_config(
+        pipe.scheduler.config,
+        use_karras_sigmas=True,
+        algorithm_type="sde-dpmsolver++"
+    )
+    pipe.scheduler = scheduler
+
+    # Move to GPU
     pipe.cuda()
     pipe.load_ip_adapter_instantid(face_adapter)
-    pipe.vae.enable_tiling()  # Enable VAE tiling
+    pipe.vae.enable_tiling()
+
+    # Create a random generator
+    generator = torch.Generator(device="cuda").manual_seed(torch.randint(0, 2**32, (1,)).item())
 
     # Initialize YOLO face detector
     face_detector = FaceDetector('yolov11n-face.pt')
@@ -234,14 +250,18 @@ def main():
             if face_image is None:
                 print(f"No faces detected in the image: {image_file}")
                 continue            
-            process_image(full_path, output_dir, pipe, app, face_image)
+            # Update generator seed for each image
+            generator.manual_seed(torch.randint(0, 2**32, (1,)).item())
+            process_image(full_path, output_dir, pipe, app, args.prompt, face_image, generator)
     else:
         # Process single image
         face_image = face_detector.predict(input_path)
         if face_image is None:
             print(f"No faces detected in the image: {input_path}")
             return
-        process_image(input_path, output_dir, pipe, app, face_image)
+        # Update generator seed for single image
+        generator.manual_seed(torch.randint(0, 2**32, (1,)).item())
+        process_image(input_path, output_dir, pipe, app, args.prompt, face_image, generator)
 
 if __name__ == "__main__":
     main()
