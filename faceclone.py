@@ -180,7 +180,7 @@ def process_image(input_path, output_dir, pipe, app, prompt, face_detector=None,
     face_emb = face_info['embedding']
     face_kps = draw_kps(face_image, face_info['kps'])
 
-    n_prompt = "(hands:1.2), (arms:1.2), (veil:1.2), cap, headset, (lowres, low quality, worst quality:1.2), (text:1.2), watermark, painting, drawing, illustration, glitch, deformed, mutated, cross-eyed, ugly, disfigured)"
+    n_prompt = "(hands:1.2), (arms:1.2), upper arm, hand, (veil:1.2), cap, headset, (lowres, low quality, worst quality:1.2), (text:1.2), watermark, painting, drawing, illustration, glitch, deformed, mutated, cross-eyed, ugly, disfigured)"
 
     images = pipe(
         prompt=prompt,
@@ -189,7 +189,7 @@ def process_image(input_path, output_dir, pipe, app, prompt, face_detector=None,
         image=face_kps,
         controlnet_conditioning_scale=0.8,
         ip_adapter_scale=0.8,
-        num_inference_steps=30,
+        num_inference_steps=40,
         guidance_scale=2,
         generator=generator,
         num_images_per_prompt=num_images,
