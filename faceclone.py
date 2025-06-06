@@ -6,6 +6,7 @@ import os
 import argparse
 from pathlib import Path
 from ultralytics import YOLO
+from tqdm import tqdm
 
 from diffusers.utils import load_image
 from diffusers.models import ControlNetModel
@@ -155,7 +156,8 @@ def get_output_filename(output_dir, input_path, index=None):
 
 
 def process_image(input_path, output_dir, pipe, app, prompt, face_detector=None, 
-                 skip_yolo=False, face_image=None, generator=None, num_images=1):
+                 skip_yolo=False, face_image=None, generator=None, num_images=1, 
+                 progress_bar=None):
     """Process a single image and save multiple results"""
     if face_image is None:
         face_image = load_image(input_path)
@@ -164,16 +166,25 @@ def process_image(input_path, output_dir, pipe, app, prompt, face_detector=None,
     if not skip_yolo and face_detector is not None:
         face_image = face_detector.predict(input_path)
         if face_image is None:
-            print(f"Skipping {input_path} due to no face detection")
+            if progress_bar:
+                progress_bar.write(f"Skipping {Path(input_path).name} - no face detection")
+            else:
+                print(f"Skipping {input_path} due to no face detection")
             return
     else:
-        print(f"Using full original image for {input_path} (YOLO skipped)")
+        if progress_bar:
+            progress_bar.write(f"Using full original image for {Path(input_path).name} (YOLO skipped)")
+        else:
+            print(f"Using full original image for {input_path} (YOLO skipped)")
 
     face_image = resize_img(face_image)
     
     face_info = app.get(cv2.cvtColor(np.array(face_image), cv2.COLOR_RGB2BGR))
     if not face_info:
-        print(f"No face detected by InsightFace in: {input_path}")
+        if progress_bar:
+            progress_bar.write(f"No face detected by InsightFace in: {Path(input_path).name}")
+        else:
+            print(f"No face detected by InsightFace in: {input_path}")
         return
     
     face_info = sorted(face_info, key=lambda x:(x['bbox'][2]-x['bbox'][0])*(x['bbox'][3]-x['bbox'][1]))[-1]
@@ -182,6 +193,12 @@ def process_image(input_path, output_dir, pipe, app, prompt, face_detector=None,
 
     n_prompt = "(hands:1.2), (arms:1.2), upper arm, hand, (veil:1.2), cap, headset, (lowres, low quality, worst quality:1.2), (text:1.2), watermark, painting, drawing, illustration, glitch, deformed, mutated, cross-eyed, ugly, disfigured)"
 
+    # Create a nested progress bar for image generation if generating multiple images
+    if num_images > 1:
+        generation_desc = f"Generating {num_images} images for {Path(input_path).name}"
+        if progress_bar:
+            progress_bar.write(generation_desc)
+    
     images = pipe(
         prompt=prompt,
         negative_prompt=n_prompt,
@@ -195,10 +212,18 @@ def process_image(input_path, output_dir, pipe, app, prompt, face_detector=None,
         num_images_per_prompt=num_images,
     ).images
 
-    for i, image in enumerate(images):
+    # Save images with progress tracking
+    save_progress = tqdm(images, desc=f"Saving images for {Path(input_path).name}", 
+                        leave=False, disable=(num_images == 1))
+    
+    for i, image in enumerate(save_progress):
         output_file = get_output_filename(output_dir, input_path, i if num_images > 1 else None)
         image.save(output_file, format="PNG")
-        print(f"Saved result to: {output_file}")
+        
+        if progress_bar:
+            progress_bar.write(f"Saved: {Path(output_file).name}")
+        else:
+            print(f"Saved result to: {output_file}")
 
 def main():
     parser = argparse.ArgumentParser(description="Process image(s) with InstantID pipeline")
@@ -218,62 +243,91 @@ def main():
     output_dir = os.path.abspath(args.output)
     os.makedirs(output_dir, exist_ok=True)
 
-    app = FaceAnalysis(name='antelopev2', root='./', providers=['CPUExecutionProvider'])
-    app.prepare(ctx_id=0, det_size=(640, 640))
+    print("Loading models...")
+    
+    # Initialize models with progress indication
+    with tqdm(total=5, desc="Loading models") as model_pbar:
+        app = FaceAnalysis(name='antelopev2', root='./', providers=['CPUExecutionProvider'])
+        app.prepare(ctx_id=0, det_size=(640, 640))
+        model_pbar.update(1)
+        model_pbar.set_description("Loaded FaceAnalysis")
 
-    face_adapter = './checkpoints/ip-adapter.bin'
-    controlnet_path = './checkpoints/ControlNetModel'
-    checkpoint_path = '/gorgon/ia/ComfyUI/models/checkpoints/realvisxlV50_v50Bakedvae.safetensors'
+        face_adapter = './checkpoints/ip-adapter.bin'
+        controlnet_path = './checkpoints/ControlNetModel'
+        checkpoint_path = '/gorgon/ia/ComfyUI/models/checkpoints/realvisxlV50_v50Bakedvae.safetensors'
 
-    controlnet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=torch.bfloat16)
-    base_pipe = StableDiffusionXLPipeline.from_single_file(
-        checkpoint_path,
-        torch_dtype=torch.bfloat16,
-        use_safetensors=True
-    )
+        controlnet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=torch.bfloat16)
+        model_pbar.update(1)
+        model_pbar.set_description("Loaded ControlNet")
+        
+        base_pipe = StableDiffusionXLPipeline.from_single_file(
+            checkpoint_path,
+            torch_dtype=torch.bfloat16,
+            use_safetensors=True
+        )
+        model_pbar.update(1)
+        model_pbar.set_description("Loaded base pipeline")
 
-    pipe = StableDiffusionXLInstantIDPipeline(
-        vae=base_pipe.vae,
-        text_encoder=base_pipe.text_encoder,
-        text_encoder_2=base_pipe.text_encoder_2,
-        unet=base_pipe.unet,
-        scheduler=base_pipe.scheduler,
-        controlnet=controlnet,
-        tokenizer=base_pipe.tokenizer,
-        tokenizer_2=base_pipe.tokenizer_2,
-    )
+        pipe = StableDiffusionXLInstantIDPipeline(
+            vae=base_pipe.vae,
+            text_encoder=base_pipe.text_encoder,
+            text_encoder_2=base_pipe.text_encoder_2,
+            unet=base_pipe.unet,
+            scheduler=base_pipe.scheduler,
+            controlnet=controlnet,
+            tokenizer=base_pipe.tokenizer,
+            tokenizer_2=base_pipe.tokenizer_2,
+        )
 
-    scheduler = DPMSolverMultistepScheduler.from_config(
-        pipe.scheduler.config,
-        use_karras_sigmas=True,
-        algorithm_type="sde-dpmsolver++"
-    )
-    pipe.scheduler = scheduler
+        scheduler = DPMSolverMultistepScheduler.from_config(
+            pipe.scheduler.config,
+            use_karras_sigmas=True,
+            algorithm_type="sde-dpmsolver++"
+        )
+        pipe.scheduler = scheduler
 
-    pipe.cuda()
-    pipe.load_ip_adapter_instantid(face_adapter)
-    pipe.vae.enable_tiling()
-    pipe.enable_model_cpu_offload()
+        pipe.cuda()
+        pipe.load_ip_adapter_instantid(face_adapter)
+        pipe.vae.enable_tiling()
+        pipe.enable_model_cpu_offload()
+        model_pbar.update(1)
+        model_pbar.set_description("Configured pipeline")
 
-    generator = torch.Generator(device="cuda").manual_seed(torch.randint(0, 2**32, (1,)).item())
+        generator = torch.Generator(device="cuda").manual_seed(torch.randint(0, 2**32, (1,)).item())
 
-    # Initialize YOLO face detector only if not skipping
-    face_detector = None if args.skip_yolo else FaceDetector('yolov11n-face.pt', target_enlargement=args.enlargement)
+        # Initialize YOLO face detector only if not skipping
+        face_detector = None if args.skip_yolo else FaceDetector('yolov11n-face.pt', target_enlargement=args.enlargement)
+        model_pbar.update(1)
+        model_pbar.set_description("Models loaded successfully")
+
+    print("Starting image processing...")
 
     input_path = os.path.abspath(args.input)
     if os.path.isdir(input_path):
         image_extensions = ('.png', '.jpg', '.jpeg', '.bmp')
         image_files = [f for f in os.listdir(input_path) if f.lower().endswith(image_extensions)]
         
-        for image_file in image_files:
-            full_path = os.path.join(input_path, image_file)
-            process_image(full_path, output_dir, pipe, app, args.prompt, 
-                         face_detector=face_detector, skip_yolo=args.skip_yolo,
-                         generator=generator, num_images=args.num_images)
+        if not image_files:
+            print("No image files found in the directory!")
+            return
+        
+        # Main progress bar for processing all images
+        with tqdm(image_files, desc="Processing images", unit="image") as pbar:
+            for image_file in pbar:
+                pbar.set_description(f"Processing {image_file}")
+                full_path = os.path.join(input_path, image_file)
+                process_image(full_path, output_dir, pipe, app, args.prompt, 
+                             face_detector=face_detector, skip_yolo=args.skip_yolo,
+                             generator=generator, num_images=args.num_images,
+                             progress_bar=pbar)
     else:
+        # Single image processing
+        print(f"Processing single image: {Path(input_path).name}")
         process_image(input_path, output_dir, pipe, app, args.prompt, 
                      face_detector=face_detector, skip_yolo=args.skip_yolo,
                      generator=generator, num_images=args.num_images)
+
+    print("Processing complete!")
 
 if __name__ == "__main__":
     main()
