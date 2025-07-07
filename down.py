@@ -17,6 +17,25 @@ hf_hub_download(
     repo_id="InstantX/InstantID", filename="ip-adapter.bin", local_dir="./checkpoints"
 )
 hf_hub_download(
+    repo_id="xxxpo13/RealVisXL_5",
+    filename="realvisxlV50_v50Bakedvae.safetensors",
+    local_dir="./checkpoints",
+)
+
+
+
+# Download the file
+hf_hub_download(
+    repo_id="AdamCodd/YOLOv11n-face-detection",
+    filename="model.pt",
+    local_dir=".",
+)
+
+# Rename the file
+os.rename("model.pt", "yolov11n-face.pt")
+
+
+hf_hub_download(
     repo_id="latent-consistency/lcm-lora-sdxl",
     filename="pytorch_lora_weights.safetensors",
     local_dir="./checkpoints",
