@@ -254,7 +254,7 @@ def main():
 
         face_adapter = './checkpoints/ip-adapter.bin'
         controlnet_path = './checkpoints/ControlNetModel'
-        checkpoint_path = '/gorgon/ia/ComfyUI/models/checkpoints/realvisxlV50_v50Bakedvae.safetensors'
+        checkpoint_path = './realvisxlV50_v50Bakedvae.safetensors'
 
         controlnet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=torch.bfloat16)
         model_pbar.update(1)

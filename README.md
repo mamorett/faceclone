@@ -99,7 +99,7 @@ output_directory/
 ## Model Checkpoints and Paths
 Ensure you have the following model checkpoints downloaded and placed correctly:
 - **YOLO Model**: `yolov11n-face.pt`
-- **Stable Diffusion XL Checkpoint**: `/gorgon/ia/ComfyUI/models/checkpoints/realvisxlV50_v50Bakedvae.safetensors`
+- **Stable Diffusion XL Checkpoint**: `.checkpoints/realvisxlV50_v50Bakedvae.safetensors`
 - **ControlNet Model**: `./checkpoints/ControlNetModel`
 - **IP Adapter Checkpoint**: `./checkpoints/ip-adapter.bin`
 
