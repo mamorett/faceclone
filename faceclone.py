@@ -124,10 +124,15 @@ def resize_img(input_image, max_side=1024, min_side=1024, size=None,
         input_image = Image.fromarray(res)
     return input_image
 
-def get_output_filename(output_dir, input_path, index=None):
+def get_output_filename(output_dir, input_path, index=None, crop_only=False):
     """Generate output filename with progressive numbering to prevent overwriting"""
     input_name = Path(input_path).stem
-    output_base = os.path.join(output_dir, input_name)
+    
+    # Add suffix for crop-only mode
+    if crop_only:
+        output_base = os.path.join(output_dir, f"{input_name}_cropped")
+    else:
+        output_base = os.path.join(output_dir, input_name)
     
     if index is not None:
         # For multiple images in one run
@@ -153,6 +158,27 @@ def get_output_filename(output_dir, input_path, index=None):
         if not os.path.exists(output_file):
             return output_file
         counter += 1
+
+
+def crop_only_process(input_path, output_dir, face_detector, progress_bar=None):
+    """Process image for crop-only mode"""
+    cropped_face = face_detector.predict(input_path)
+    
+    if cropped_face is None:
+        if progress_bar:
+            progress_bar.write(f"Skipping {Path(input_path).name} - no face detection")
+        else:
+            print(f"Skipping {input_path} due to no face detection")
+        return
+    
+    # Save the cropped face
+    output_file = get_output_filename(output_dir, input_path, crop_only=True)
+    cropped_face.save(output_file, format="PNG")
+    
+    if progress_bar:
+        progress_bar.write(f"Saved cropped face: {Path(output_file).name}")
+    else:
+        print(f"Saved cropped face to: {output_file}")
 
 
 def process_image(input_path, output_dir, pipe, app, prompt, face_detector=None, 
@@ -238,11 +264,48 @@ def main():
                        help="Face crop enlargement value in pixels (default: 100)")
     parser.add_argument("--skip-yolo", action="store_true",
                        help="Skip YOLO face detection and use full original image")
+    parser.add_argument("--crop-only", "-c", action="store_true",
+                       help="Only crop faces using YOLO without running diffusion pipeline")
     args = parser.parse_args()
 
     output_dir = os.path.abspath(args.output)
     os.makedirs(output_dir, exist_ok=True)
 
+    # Initialize YOLO face detector (always needed for crop-only mode)
+    if args.crop_only or not args.skip_yolo:
+        print("Loading YOLO face detection model...")
+        face_detector = FaceDetector('yolov11n-face.pt', target_enlargement=args.enlargement)
+    else:
+        face_detector = None
+
+    # If crop-only mode, skip loading diffusion models
+    if args.crop_only:
+        print("Running in crop-only mode - skipping diffusion model loading...")
+        
+        input_path = os.path.abspath(args.input)
+        if os.path.isdir(input_path):
+            image_extensions = ('.png', '.jpg', '.jpeg', '.bmp')
+            image_files = [f for f in os.listdir(input_path) if f.lower().endswith(image_extensions)]
+            
+            if not image_files:
+                print("No image files found in the directory!")
+                return
+            
+            # Main progress bar for processing all images
+            with tqdm(image_files, desc="Cropping faces", unit="image") as pbar:
+                for image_file in pbar:
+                    pbar.set_description(f"Cropping {image_file}")
+                    full_path = os.path.join(input_path, image_file)
+                    crop_only_process(full_path, output_dir, face_detector, progress_bar=pbar)
+        else:
+            # Single image processing
+            print(f"Cropping face from: {Path(input_path).name}")
+            crop_only_process(input_path, output_dir, face_detector)
+        
+        print("Cropping complete!")
+        return
+
+    # Original diffusion pipeline loading and processing
     print("Loading models...")
     
     # Initialize models with progress indication
@@ -294,9 +357,6 @@ def main():
         model_pbar.set_description("Configured pipeline")
 
         generator = torch.Generator(device="cuda").manual_seed(torch.randint(0, 2**32, (1,)).item())
-
-        # Initialize YOLO face detector only if not skipping
-        face_detector = None if args.skip_yolo else FaceDetector('yolov11n-face.pt', target_enlargement=args.enlargement)
         model_pbar.update(1)
         model_pbar.set_description("Models loaded successfully")
 
